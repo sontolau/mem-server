@@ -1,0 +1,354 @@
+#!/bin/sh
+
+MYSQL=$(type -p mysql)
+
+DB_ENGINE=MYSQL
+DB_USER=aotain_mem
+DB_PWD=aotain_mem
+DB_HOST=localhost
+
+if [ -f "/etc/aotain-mem/AT-mem.conf" ]; then
+    . /etc/aotain-mem/AT-mem.conf
+fi
+
+if [ -f "/usr/local/etc/aotain-mem/AT-mem.conf" ]; then
+    . /usr/local/etc/aotain-mem/AT-mem.conf
+fi
+
+
+usage () {
+    :
+}
+
+
+execute_mysql() {
+    $MYSQL -u $DB_USER -h $DB_HOST -p$DB_PWD -e "$1;" $2
+}
+
+create_mysql_user() {
+    read -p "MySQL password for root: " rootpwd
+    $MYSQL -u root -p$rootpwd -h localhost -e "CREATE USER '$DB_USER'@'%' IDENTIFIED BY '$DB_PWD'";
+    $MYSQL -u root -p$rootpwd -h localhost -e "CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PWD'";
+}
+
+create_mysql_db() {
+    read -p "Please enter the password for root: " rootpwd
+    $MYSQL -u root -p$rootpwd -h localhost -e "CREATE DATABASE $1;grant all privileges on $1.* to '$DB_USER'@'%' identified by '$DB_PWD';"
+}
+
+config_opensips() {
+    if [ -d "/etc/opensips" ]; then
+        OPENSIPS_DIR=/etc/opensips
+    elif [ -d "/usr/local/etc/opensips" ]; then
+        OPENSIPS_DIR=/usr/local/etc/opensips
+    else
+        echo ""
+        exit 1
+    fi
+
+    OPENSIPS_CFG=$OPENSIPS_DIR/opensips.cfg
+    #修改MYSQL连接信息。
+    MYSQL_CONN="mysql:\/\/$DB_USER:$DB_PWD@$DB_HOST\/opensips"
+    sed -i "s/MYSQL_CONN_INFO/$MYSQL_CONN/g" $OPENSIPS_CFG
+
+    #设置OPENSIPS模块路径。
+    if [ -d "/lib64/opensips/modules" -o \
+         -d "/lib/opensips/modules" ]; then
+        if [ `uname -m` == "x86_64" ]; then
+            MPATH=/lib64/opensips/modules
+        else
+            MPATH=/lib/opensips/modules
+        fi
+    elif [ -d "/usr/local/lib64/opensips/modules" -o \
+           -d "/usr/local/lib/opensips/modules" ]; then
+        if [ `uname -m` == "x86_64" ]; then
+            MPATH=/usr/local/lib64/opensips/modules
+        else
+            MPATH=/usr/local/lib/opensips/modules
+        fi
+    fi
+    sed -i "/^mpath=.*/c mpath=\"$MPATH\"" $OPENSIPS_CFG
+    sed -i "/^listen=.*/c listen=$OPENSIPS_HOST_INFO" $OPENSIPS_CFG
+    #修改ASTERISK服务器地址信息。
+    sed -i "s/ASTERISK_HOST_INFO/$ASTERISK_HOST_INFO/g" $OPENSIPS_CFG
+
+    #修改预先定义的各种服务电话类型。
+    sed -i "s/REG_ECHO_NUMBER/$REG_ECHO_NUMBER/g" $OPENSIPS_CFG
+    sed -i "s/REG_DATE_NUMBER/$REG_DATE_NUMBER/g" $OPENSIPS_CFG
+    sed -i "s/REG_TIME_NUMBER/$REG_TIME_NUMBER/g" $OPENSIPS_CFG
+    sed -i "s/REG_CONF_NUMBER/$REG_CONF_NUMBER/g" $OPENSIPS_CFG
+    sed -i "s/REG_SIP_NUMBER/$REG_SIP_NUMBER/g" $OPENSIPS_CFG
+    sed -i "s/REG_VOICEMAIL_NUMBER/$REG_VOICEMAIL_NUMBER/g" $OPENSIPS_CFG
+}
+
+config_asterisk() {
+    # 配置ODBC。
+    if [ -f "/etc/odbc.ini" ]; then
+        ODBC_PATH=/etc/odbc.ini
+    elif [ -f "/usr/local/etc/odbc.ini" ]; then
+        ODBC_PATH=/usr/local/etc/odbc.ini
+    else
+        echo "不能找到odbc.ini文件，请确定你的ODBC是否已经安装。"
+        exit 1
+    fi
+
+    sed -i "/^SERVER.*/c SERVER=$DB_HOST" $ODBC_PATH
+    sed -i "/^USER.*/c USER=$DB_USER" $ODBC_PATH
+    sed -i "/^PASSWORD.*/c PASSWORD=$DB_PWD" $ODBC_PATH
+
+    if [ -d "/etc/asterisk" ]; then
+        ASTERISK_DIR=/etc/asterisk
+    elif [ -d "/usr/local/etc/asterisk" ]; then
+        ASTERISK_DIR=/usr/local/etc/asterisk
+    else
+        echo "没有找到ASTERISK配置文件路径。"
+        exit 1
+    fi
+
+    #配置ASTERISK的ODBC。
+    if [ ! -f "$ASTERISK_DIR/res_odbc.conf" ]; then
+        touch $ASTERISK_DIR/res_odbc.conf
+    fi
+
+    sed -i "/username.*/c username => $DB_USER" $ASTERISK_DIR/res_odbc.conf
+    sed -i "/password.*/c password => $DB_PWD"  $ASTERISK_DIR/res_odbc.conf
+
+    #ASTERISK SIP详细配置信息。
+    AST_EXT_CONF=$ASTERISK_DIR/extensions.conf
+
+    pos=$(echo `sed -n '/\[default\]/=' $AST_EXT_CONF` | awk '{print $1;}')
+    #会议配置。
+    cfg_string="exten => _CR_.,1,Ringing\n\
+                exten => _CR_.,n,Wait(1)\n\
+                exten => _CR_.,n,MeetMe(\${EXTEN:3}|Mi)"
+    sed -i "${pos}a $cfg_string" $AST_EXT_CONF
+
+    #回显配置。
+    cfg_string="exten => AN_echo,1,Ringing\n\
+                exten => AN_echo,2,Answer\n\
+                exten => AN_echo,3,Echo\n"
+
+    sed -i "${pos}a $cfg_string" $AST_EXT_CONF
+
+    # 日期配置。
+    cfg_string="exten => AN_date,1,Ringing\n\
+                exten => AN_date,2,SayUnixTime(,Europe/Bucharest,ABdY)\n\
+                exten => AN_date,3,Haangup\n"
+    sed -i "${pos}a $cfg_string" $AST_EXT_CONF
+
+    # 时间配置。
+    cfg_string="exten => AN_time,1,Ringing\n\
+                exten => AN_time,2,Wait(1)\n\
+                exten => AN_time,3,SayUnixTime(,Europe/Bucharest,HMp)\n\
+                exten => AN_time,4,Hangup\n"
+    sed -i "${pos}a $cfg_string" $AST_EXT_CONF
+
+    # 不可用
+    cfg_string="exten => AN_notavailable,1,Ringing\n\
+                exten => AN_notavailable,2,Playback(notavailable)\n\
+                exten => AN_notavailable,3,Hangup\n"
+    sed -i "${pos}a $cfg_string" $AST_EXT_CONF
+
+    # 允许用户直接拨打语音邮件。
+    cfg_string="exten => VM_pickup,n,Ringing\n\
+                exten => VM_pickup,n,wait(1)\n\
+                exten => VM_pickup,n,VoicemailMain(\${CALLERIDNUM}|s)\n\
+                exten => VM_pickup,n,Hangup\n"
+    sed -i "${pos}a $cfg_string" $AST_EXT_CONF
+
+    #语音邮件
+    cfg_string="exten => _VMR_.,n,Ringing\n\
+                exten => _VMR_.,n,Wait(1)\n\
+                exten => _VMR_.,n,Answer\n\
+                exten => _VMR_.,n,Wait(1)\n\
+                exten => _VMR_.,n,Voicemail(\${EXTEN:4}|u)\n\
+                exten => _VMR_.,n,Hangup\n"
+    sed -i "${pos}a $cfg_string" $AST_EXT_CONF
+ 
+}
+
+initdb_opensips() {
+    if [ -f "/etc/opensips/opensipsctlrc" ]; then
+        OPENSIPSRC=/etc/opensips/opensipsctlrc
+    elif [ -f "/usr/local/etc/opensips/opensipsctlrc" ]; then
+        OPENSIPSRC=/usr/local/etc/opensips/opensipsctlrc
+    fi
+
+    if [ -f "$OPENSIPSRC" ]; then
+        rm -rf $OPENSIPSRC
+    fi
+
+    #设置OPENSIPS的配置文件信息。
+    [ -n "$DB_ENGINE" ] && echo "DBENGINE=$DB_ENGINE" >> $OPENSIPSRC
+    [ -n "$DB_HOST" ] && echo "DBHOST=$DB_HOST" >> $OPENSIPSRC
+    #[ -n "$DB_NAME" ] && echo "DBNAME=opensips" >> $OPENSIPSRC
+    [ -n "$DB_USER" ] && echo "DBRWUSER=$DB_USER" >> $OPENSIPSRC
+    [ -n "$DB_PWD" ] && echo "DBRWPW=$DB_PWD" >> $OPENSIPSRC
+
+    opensipsdbctl create
+    #修改数据表使得OPENSIPS服务与ASTERISK服务协同工作。
+    execute_mysql "alter table subscriber add column \`vmail_password\` varchar(8) not null default '123456';\
+                   alter table subscriber add column \`first_name\` varchar(25) not null default '';\
+                   alter table subscriber add column \`last_name\` varchar(45) not null default '';\
+                   alter table subscriber add column \`datetime_created\` datetime not null default '0000-00-00 00'" opensips
+
+}
+
+#为ASTERISK服务建立数据库信息。
+initdb_asterisk() {
+    #read -p "正在创建ASTERISK数据库账户，请输入ASTERISK的密码" astpwd
+    #execute_mysql "CREATE USER 'asterisk'@'%' IDENTIFIED BY '$astpwd';"
+    #echo -n -e "\n正在为ASTERISK创建数据库，请等待……"
+    create_mysql_db asterisk
+
+
+    #创建ASTERISK所使用的数据表(meetme服务)。
+    execute_mysql "CREATE TABLE \`meetme\` (\
+                     \`confno\` varchar(64) not null default'0',\
+                     \`username\` varchar(64) not null default '',\
+                     \`domain\` varchar(128) NOT NULL default '',\
+                     \`pin\` varchar(20) default NULL,\
+                     \`adminpin\` varchar(20) default NULL,\
+                     \`members\` int(11) NOT NULL default '0',\
+                      PRIMARY KEY  (\`confno\`)\
+                   ) ENGINE=MyISAM" asterisk
+
+    #用于储存语音邮件的消息
+    execute_mysql "CREATE TABLE \`voicemessages\` (\
+                    \`id\` int(11) not null auto_increment,\
+                    \`msgnum\` int(11) not null default '0',\
+                    \`dir\` varchar(80) default '',\
+                    \`context\` varchar(80) default '',\
+                    \`macrocontext\` varchar(80) default '',\
+                    \`callerid\` varchar(40) default '',\
+                    \`origtime\` varchar(40) default '',\
+                    \`duration\` varchar(20) default '',\
+                    \`mailboxuser\` varchar(80) default '',\
+                    \`mailboxcontext\` varchar(80) default '',\
+                    \`recording\` longblob,\
+                    PRIMARY KEY (\`id\`),\
+                    KEY \`dir\` (\`dir\`)\
+                  ) ENGINE=MyISAM" asterisk
+
+    #用于ASTERISK读取来自于OPENSIPS表的信息。
+    execute_mysql "CREATE VIEW \`asterisk\`.\`sipusers\` AS select\
+                      \`opensips\`.\`subscriber\`.\`username\` AS \`name\`,\
+                      \`opensips\`.\`subscriber\`.\`username\` AS \`username\`,\
+                      _latin1'friend' AS \`type\`,\
+                      NULL AS \`secret\`,\
+                      \`opensips\`.\`subscriber\`.\`domain\` AS \`host\`,\
+                      concat(\`opensips\`.\`subscriber\`.\`rpid\`,_latin1' ',_latin1'<',\`opensips\`.\`subscriber\`.\`username\`,_latin1'>') AS \`callerid\`,\
+                      _latin1'default' AS \`context\`,\
+                      \`opensips\`.\`subscriber\`.\`username\` AS \`mailbox\`,\
+                      _latin1'yes' AS \`nat\`,\
+                      _latin1'no' AS \`qualify\`,\
+                      \`opensips\`.\`subscriber\`.\`username\` AS \`fromuser\`,\
+                      NULL AS \`authuser\`,\
+                      \`opensips\`.\`subscriber\`.\`domain\` AS \`fromdomain\`,\
+                      NULL AS \`insecure\`,\
+                      _latin1'no' AS \`canreinvite\`,\
+                      NULL AS \`disallow\`,\
+                      NULL AS \`allow\`,\
+                      NULL AS \`restrictcid\`,\
+                      \`opensips\`.\`subscriber\`.\`domain\` AS \`defaultip\`,\
+                      \`opensips\`.\`subscriber\`.\`domain\` AS \`ipaddr\`,\
+                      _latin1'5060' AS \`port\`,\
+                      NULL AS \`regseconds\`\
+                  FROM \`opensips\`.\`subscriber\`" asterisk
+
+    #ASTERISK voicemail用户表视图，该表可以查看OPENSIPS的subscriber信息。
+    execute_mysql "CREATE VIEW \`asterisk\`.\`vmusers\` AS select \
+                    concat(\`opensips\`.\`subscriber\`.\`username\`,\`opensips\`.\`subscriber\`.\`domain\`) AS \`uniqueid\`,\
+                    \`opensips\`.\`subscriber\`.\`username\` AS \`customer_id\`,\
+                    _latin1'default' AS \`context\`,\
+                    \`opensips\`.\`subscriber\`.\`username\` AS \`mailbox\`,\
+                    \`opensips\`.\`subscriber\`.\`vmail_password\` AS \`password\`,\
+                    concat(\`opensips\`.\`subscriber\`.\`first_name\`,_latin1' ',\`opensips\`.\`subscriber\`.\`last_name\`) AS \`fullname\`,\
+                    \`opensips\`.\`subscriber\`.\`email_address\` AS \`email\`,\
+                    NULL AS \`pager\`,
+                    \`opensips\`.\`subscriber\`.\`datetime_created\` AS \`stamp\`\
+                  FROM \`opensips\`.\`subscriber\`" asterisk
+
+    #ASTERISK voicemail更名表视图，该视图可查看OPENSIPS的dbaliase表信息。
+    execute_mysql "CREATE VIEW \`asterisk\`.\`vmaliases\` AS select\
+                      \`opensips\`.\`dbaliases\`.\`alias_username\` AS \`alias\`,\
+                      _latin1'default' AS \`context\`,\
+                      \`opensips\`.\`dbaliases\`.\`username\` AS \`mailbox\`\
+                  FROM \`opensips\`.\`dbaliases\`" asterisk
+}
+
+#初始化OPENSIPS与ASTERISK所需要的数据库。
+#更多的信息请查看http://http://www.opensips.org/Documentation/
+
+initdb() {
+    #FIXME: 检测环境。
+    initdb_opensips
+    initdb_asterisk
+}
+
+config_mem() {
+    config_opensips
+    config_asterisk
+}
+
+case $1 in
+"uninstall")
+    yum remove opensips
+    yum remove asterisk\*
+
+    if [ -d "/etc/aotain-mem" ]; then
+        rm -rf /etc/aotain-mem
+    fi
+
+    if [ -d "/usr/local/etc/aotain-mem" ]; then
+        rm -rf /usr/local/etc/aotain-mem
+    fi
+;;
+
+"init")
+    initdb
+;;
+"clean")
+    read -p "Enter the password for root: " rootpwd
+    $MYSQL -u root -p$rootpwd -h localhost -e "DROP DATABASE opensips;DROP DATABASE asterisk;"
+    #$MYSQL -u root -p$rootpwd -h localhost -e "DROP USER '$DB_USER'@'%';"
+    #$MYSQL -u root -p$rootpwd -h localhost -e "DROP USER '$DB_USER'@'localhost';"
+;;
+"config")
+    if [ -d "/etc/aotain-mem" ]; then
+        MEM_PATH=/etc/aotain-mem
+    elif [ -d "/usr/local/etc/aotain-mem" ]; then
+        MEM_PATH=/usr/local/etc/aotain-mem
+    else
+        echo ""
+        exit 1
+    fi
+
+    cp -f $MEM_PATH/templates/odbc.ini /etc/
+    cp -f $MEM_PATH/templates/odbcinst.ini /etc/
+
+    if [ -d "/etc/opensips" ]; then
+        OPENSIPSDIR=/etc/opensips
+    elif [ -d "/usr/local/etc/opensips" ]; then
+        OPENSIPSDIR=/usr/local/etc/opensips
+    else
+        exit 1
+    fi
+
+    cp -f $MEM_PATH/templates/opensips.cfg $OPENSIPSDIR/
+
+    if [ -d "/etc/asterisk" ]; then
+        ASTERISKDIR=/etc/asterisk
+    elif [ -d "/usr/local/etc/asterisk" ]; then
+        ASTERISKDIR=/usr/local/etc/asterisk
+    else
+        exit 1
+    fi
+
+    cp -f $MEM_PATH/templates/extensions.conf $ASTERISKDIR/
+    cp -f $MEM_PATH/templates/res_odbc.conf $ASTERISKDIR/
+    cp -f $MEM_PATH/templates/extconfig.conf $ASTERISKDIR/
+    config_mem
+;;
+esac
+
