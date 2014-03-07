@@ -20,13 +20,24 @@ check_os() {
 }
 
 install_opensips() {
-    echo "Downloading opensips for version 1.8, please stand by... ..."
-    git clone https://github.com/OpenSIPS/opensips.git -b 1.8 opensips > /dev/null 2>&1
+    echo -n "Downloading opensips for version 1.8, please stand by... ..."
+    if ! ( git clone https://github.com/OpenSIPS/opensips.git -b 1.8 opensips > /dev/null 2>&1 ); then
+        echo "[ ERROR ]"
+        exit 1
+    else
+        echo "[ OK ]"
+    fi
 
-    echo "--->Installing opensips with mysql support ... ..."
-    (cd opensips && \
-     make include_modules="db_mysql" all && \
-     make include_modules="db_mysql" install) > /dev/null 2>&1
+    echo -n "Installing opensips with mysql support ... ..."
+   
+    if ! (( cd opensips && \
+           make include_modules="db_mysql" all && \
+           make include_modules="db_mysql" install) > /dev/null 2>&1 ); then
+        echo "[ ERROR ]"
+        exit 1
+    else
+        echo "[ OK ]"
+    fi
 
     rm -rf opensips
 }
