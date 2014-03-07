@@ -80,7 +80,7 @@ check_os
 echo "The server will be installed on $DIST_TYPE($DIST_VERSION)"
 
 install_opensips
-install_asterisk
+#install_asterisk
 
 if [ ! -d "/etc/aotain-mem" ]; then
     mkdir /etc/aotain-mem
